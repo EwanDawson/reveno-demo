@@ -26,12 +26,15 @@ data class PersonEntity private constructor(val entity: Entity<Person>) {
     fun delete() : PersonEntity = PersonEntity(entity.delete())
 }
 
-data class Account(val name: String, val balance: Int)
+data class Account(val name: String, val balance: Int) {
+    operator fun plus(amount: Int) : Account = copy(balance = balance + amount)
+}
 
 data class AccountEntity private constructor(val entity: Entity<Account>) {
     constructor(name: String, balance: Int) : this(Entity(Account(name, balance), "Account"))
-    fun update(mutator: (Account) -> Account) : AccountEntity = AccountEntity(entity.update(mutator))
+    private fun update(mutator: (Account) -> Account) : AccountEntity = AccountEntity(entity.update(mutator))
     fun delete() : AccountEntity = AccountEntity(entity.delete())
+    operator fun plus(amount: Int) : AccountEntity = update { it.plus(amount) }
 }
 
 data class AccountView(val identifier: String, val name: String, val balance: Int, val version: Long, val deleted: Boolean)
@@ -89,9 +92,7 @@ fun init(folder: String): Reveno {
     reveno.domain()
             .transaction("changeBalance") { txn, ctx ->
                 val before = ctx.repo().get(AccountEntity::class.java, txn.arg())
-                val after = ctx.repo().store(txn.id(), before.update {
-                    it.copy(balance = it.balance + txn.intArg("inc"))
-                })
+                val after = ctx.repo().store(txn.id(), before + txn.intArg("inc"))
                 ctx.eventBus().publishEvent(EntityChangedEvent(before.entity, after.entity))
             }
             .uniqueIdFor(AccountEntity::class.java)
