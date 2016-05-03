@@ -10,7 +10,28 @@ interface Identified { val identifier: UUID }
 
 interface Versioned { val version: Long }
 
-interface Entity : Identified, Versioned { val deleted: Boolean }
+interface Entity : Identified, Versioned {
+    val deleted: Boolean
+    fun delete() : Entity
+}
+
+data class AbstractEntity<T> private constructor(val identifier: String, val version: Long, val deleted: Boolean, val value: T) {
+    constructor(value: T, type: String) : this("$type:${UUID.randomUUID()}", 0L, false, value)
+    fun update(mutator: (T) -> T) : AbstractEntity<T> {
+        check(!deleted)
+        return copy(value = mutator(value), version = version + 1)
+    }
+    fun delete() : AbstractEntity<T> {
+        check(!deleted)
+        return copy(version = version + 1, deleted = true)
+    }
+}
+
+data class Person(val name: String, val age: Int) {
+    companion object {
+        fun entity(name: String, age: Int) : AbstractEntity<Person> = AbstractEntity(Person(name, age), "Person")
+    }
+}
 
 data class Account private constructor (val name: String, val balance: Int, override val identifier: UUID, override val version: Long, override val deleted: Boolean) : Entity {
     constructor(name: String, balance: Int) : this (name, balance, UUID.randomUUID(), 0L, false)
@@ -18,7 +39,7 @@ data class Account private constructor (val name: String, val balance: Int, over
         check(!deleted)
         return copy(balance = balance + amount, version = version + 1)
     }
-    fun delete() : Account {
+    override fun delete() : Account {
         check(!deleted)
         return copy(deleted = true, version = version + 1)
     }
