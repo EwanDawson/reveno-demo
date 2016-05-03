@@ -6,46 +6,35 @@ import org.reveno.atp.utils.MapUtils.map
 import java.time.Instant
 import java.util.*
 
-interface Identified { val identifier: UUID }
-
-interface Versioned { val version: Long }
-
-interface Entity : Identified, Versioned {
-    val deleted: Boolean
-    fun delete() : Entity
-}
-
-data class AbstractEntity<T> private constructor(val identifier: String, val version: Long, val deleted: Boolean, val value: T) {
-    constructor(value: T, type: String) : this("$type:${UUID.randomUUID()}", 0L, false, value)
-    fun update(mutator: (T) -> T) : AbstractEntity<T> {
+data class Entity<T> private constructor(val identifier: String, val version: Long, val deleted: Boolean, val value: T, val type: String) {
+    constructor(value: T, type: String) : this("$type:${UUID.randomUUID()}", 0L, false, value, type)
+    fun update(mutator: (T) -> T) : Entity<T> {
         check(!deleted)
         return copy(value = mutator(value), version = version + 1)
     }
-    fun delete() : AbstractEntity<T> {
+    fun delete() : Entity<T> {
         check(!deleted)
         return copy(version = version + 1, deleted = true)
     }
 }
 
-data class Person(val name: String, val age: Int) {
-    companion object {
-        fun entity(name: String, age: Int) : AbstractEntity<Person> = AbstractEntity(Person(name, age), "Person")
-    }
+data class Person(val name: String, val age: Int)
+
+data class PersonEntity private constructor(val entity: Entity<Person>) {
+    constructor(name: String, age: Int) : this(Entity(Person(name, age), "Person"))
+    fun update(mutator: (Person) -> Person) : PersonEntity = PersonEntity(entity.update(mutator))
+    fun delete() : PersonEntity = PersonEntity(entity.delete())
 }
 
-data class Account private constructor (val name: String, val balance: Int, override val identifier: UUID, override val version: Long, override val deleted: Boolean) : Entity {
-    constructor(name: String, balance: Int) : this (name, balance, UUID.randomUUID(), 0L, false)
-    fun add(amount: Int) : Account {
-        check(!deleted)
-        return copy(balance = balance + amount, version = version + 1)
-    }
-    override fun delete() : Account {
-        check(!deleted)
-        return copy(deleted = true, version = version + 1)
-    }
+data class Account(val name: String, val balance: Int)
+
+data class AccountEntity private constructor(val entity: Entity<Account>) {
+    constructor(name: String, balance: Int) : this(Entity(Account(name, balance), "Account"))
+    fun update(mutator: (Account) -> Account) : AccountEntity = AccountEntity(entity.update(mutator))
+    fun delete() : AccountEntity = AccountEntity(entity.delete())
 }
 
-data class AccountView(val identifier: UUID, val name: String, val balance: Int, val version: Long)
+data class AccountView(val identifier: String, val name: String, val balance: Int, val version: Long, val deleted: Boolean)
 
 data class Snapshot private constructor (val id: Long, val ancestors: List<Long>, val creatorBranch: Long, val entityChanges: List<Long>) {
     constructor(id: Long, creatorBranch: Long) : this(id, listOf(), creatorBranch, listOf())
@@ -60,18 +49,18 @@ data class SnapshotDescription(val description: String)
 
 enum class EntityChangeType { CREATE, UPDATE, DELETE }
 
-data class EntityChange(val id: Long, val type: EntityChangeType, val entityClass: Class<Entity>, val identifier: UUID, val before: Long?, val after: Long?, val snapshot: Long) {
-    constructor(id: Long, event: EntityChangedEvent, snapshot: Long) : this(id, event.type, event.entityClass, event.entityIdentifier, event.before?.version, event.after.version, snapshot)
+data class EntityChange(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val before: Long?, val after: Long?, val snapshot: Long) {
+    constructor(id: Long, event: EntityChangedEvent<*>, snapshot: Long) : this(id, event.type, event.entityType, event.entityIdentifier, event.before?.version, event.after.version, snapshot)
 
 }
 
-data class EntityChangedEvent(val before: Entity?, val after: Entity) {
+data class EntityChangedEvent<T>(val before: Entity<T>?, val after: Entity<T>) {
     val type: EntityChangeType = if (before == null) EntityChangeType.CREATE else if (after.deleted) EntityChangeType.DELETE else EntityChangeType.UPDATE
-    val entityClass: Class<Entity> = after.javaClass
-    val entityIdentifier: UUID = after.identifier
+    val entityType: String = after.type
+    val entityIdentifier: String = after.identifier
     init {
         if (before != null) {
-            check(before.javaClass == after.javaClass)
+            check(before.type == after.type)
             check(before.identifier == after.identifier)
             check(before.version + 1 == after.version)
         }
@@ -80,7 +69,6 @@ data class EntityChangedEvent(val before: Entity?, val after: Entity) {
 
 //data class EntityHistory(val identifier: UUID, val upToSnapshot: Long, val id: List<Long>)
 
-val account = Account::class.java
 val accountView = AccountView::class.java
 val SnapshotDomain = Snapshot::class.java
 val SnapshotDescriptionView = SnapshotDescription::class.java
@@ -92,21 +80,23 @@ fun init(folder: String): Reveno {
     val reveno = Engine(folder)
     reveno.domain()
             .transaction("createAccount") { txn, ctx ->
-                val newAccount = ctx.repo().store(txn.id(), Account(txn.arg(), 0))
-                ctx.eventBus().publishEvent(EntityChangedEvent(null, newAccount))
+                val newAccount = ctx.repo().store(txn.id(), AccountEntity(txn.arg(), 0))
+                ctx.eventBus().publishEvent(EntityChangedEvent(null, newAccount.entity))
             }
-            .uniqueIdFor(account)
+            .uniqueIdFor(AccountEntity::class.java)
             .command()
 
     reveno.domain()
             .transaction("changeBalance") { txn, ctx ->
-                val before = ctx.repo().get(account, txn.arg())
-                val after = ctx.repo().store(txn.id(), before.add(txn.intArg("inc")))
-                ctx.eventBus().publishEvent(EntityChangedEvent(before, after))
+                val before = ctx.repo().get(AccountEntity::class.java, txn.arg())
+                val after = ctx.repo().store(txn.id(), before.update {
+                    it.copy(balance = it.balance + txn.intArg("inc"))
+                })
+                ctx.eventBus().publishEvent(EntityChangedEvent(before.entity, after.entity))
             }
-            .uniqueIdFor(account)
+            .uniqueIdFor(AccountEntity::class.java)
             .conditionalCommand { cmd, ctx ->
-                val accountToChange = ctx.repo().get(account, cmd.arg())
+                val accountToChange = ctx.repo().get(AccountEntity::class.java, cmd.arg()).entity
                 reveno.query()
                         .select(accountView) { acc ->
                             acc.identifier == accountToChange.identifier && acc.version == accountToChange.version + 1
@@ -117,13 +107,13 @@ fun init(folder: String): Reveno {
 
     reveno.domain()
             .transaction("deleteAccount") { txn, ctx ->
-                val before = ctx.repo().get(account, txn.arg())
+                val before = ctx.repo().get(AccountEntity::class.java, txn.arg())
                 val after = ctx.repo().store(txn.id(), before.delete())
-                ctx.eventBus().publishEvent(EntityChangedEvent(before, after))
+                ctx.eventBus().publishEvent(EntityChangedEvent(before.entity, after.entity))
             }
-            .uniqueIdFor(account)
+            .uniqueIdFor(AccountEntity::class.java)
             .conditionalCommand { cmd, ctx ->
-                val accountToDelete = ctx.repo().get(account, cmd.arg())
+                val accountToDelete = ctx.repo().get(AccountEntity::class.java, cmd.arg()).entity
                 reveno.query()
                         .select(accountView) { acc ->
                             acc.identifier == accountToDelete.identifier && acc.version == accountToDelete.version + 1
@@ -132,8 +122,10 @@ fun init(folder: String): Reveno {
             }
             .command()
 
-    reveno.domain().viewMapper(account, accountView) { id, acc, ctx ->
-        AccountView(acc.identifier, acc.name, acc.balance, acc.version)
+    reveno.domain().viewMapper(AccountEntity::class.java, accountView) { id, account, ctx ->
+        account.entity.let {
+            AccountView(it.identifier, it.value.name, it.value.balance, it.version, it.deleted)
+        }
     }
 
     reveno.domain().viewMapper(EntityChangeDomain, EntityChangeDomain) { id, ec, ctx ->  ec }
