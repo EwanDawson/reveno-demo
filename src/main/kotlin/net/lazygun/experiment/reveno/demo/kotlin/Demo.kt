@@ -6,6 +6,7 @@ import org.reveno.atp.core.Engine
 import org.reveno.atp.utils.MapUtils.map
 import java.time.Instant
 import java.util.*
+import java.util.concurrent.atomic.AtomicLong
 
 fun <T> Class<T>.identityViewsMapper() = { id: Long, entity: T, repository: MappingContext -> entity }
 
@@ -51,19 +52,21 @@ fun initAccount(reveno: Reveno) {
 
         transaction("createAccount") { txn, ctx ->
             val newAccount = ctx.repo().store(txn.id(), AccountEntity(txn.arg(), 0))
+            println("Created $newAccount")
             ctx.eventBus().publishEvent(EntityChangedEvent(null, newAccount.entity))
         }
-        .uniqueIdFor(AccountEntity::class.java)
+        .uniqueIdFor(Account.domain)
         .command()
 
         transaction("changeBalance") { txn, ctx ->
             val before = ctx.repo().get(AccountEntity::class.java, txn.arg())
             val after = ctx.repo().store(txn.id(), before + txn.intArg("inc"))
+            println("Changed balance of account ${before.entity.value.name} from ${before.entity.value.balance} to ${after.entity.value.balance}")
             ctx.eventBus().publishEvent(EntityChangedEvent(before.entity, after.entity))
         }
-        .uniqueIdFor(AccountEntity::class.java)
+        .uniqueIdFor(Account.domain)
         .conditionalCommand { cmd, ctx ->
-            val accountToChange = ctx.repo().get(AccountEntity::class.java, cmd.arg()).entity
+            val accountToChange = ctx.repo().get(Account.domain, cmd.arg()).entity
             reveno.query().select(Account.view) { acc ->
                 acc.identifier == accountToChange.identifier && acc.version == accountToChange.version + 1
             }
@@ -72,13 +75,14 @@ fun initAccount(reveno: Reveno) {
         .command()
 
         transaction("deleteAccount") { txn, ctx ->
-            val before = ctx.repo().get(AccountEntity::class.java, txn.arg())
+            val before = ctx.repo().get(Account.domain, txn.arg())
             val after = ctx.repo().store(txn.id(), before.delete())
+            println("Deleted $after")
             ctx.eventBus().publishEvent(EntityChangedEvent(before.entity, after.entity))
         }
-        .uniqueIdFor(AccountEntity::class.java)
+        .uniqueIdFor(Account.domain)
         .conditionalCommand { cmd, ctx ->
-            val accountToDelete = ctx.repo().get(AccountEntity::class.java, cmd.arg()).entity
+            val accountToDelete = ctx.repo().get(Account.domain, cmd.arg()).entity
             reveno.query()
             .select(Account.view) { acc ->
                 acc.identifier == accountToDelete.identifier && acc.version == accountToDelete.version + 1
@@ -107,7 +111,41 @@ data class Snapshot private constructor (val id: Long, val ancestors: List<Long>
     }
 }
 
-data class Branch (val id: Long, val parent: Long, val tip: Long)
+data class Branch (val id: Long, val parent: Long, val tip: Long) {
+    companion object {
+        val domain = Branch::class.java
+    }
+}
+
+fun initVersioning(reveno: Reveno) {
+    reveno.domain().apply {
+        transaction("createSnapshot") { txn, ctx ->
+            val snapshot = ctx.repo().store(txn.id(), Snapshot(txn.id(), 0L))
+            println("Created $snapshot")
+        }
+        .uniqueIdFor(Snapshot.domain)
+        .command()
+
+        viewMapper(Snapshot.domain, Snapshot.domain, Snapshot.domain.identityViewsMapper())
+
+        transaction("createBranch") { txn, ctx ->
+            val branch = ctx.repo().store(txn.id(), Branch)
+            println("Created $branch")
+        }
+
+        viewMapper(Branch.domain, Branch.domain, Branch.domain.identityViewsMapper())
+
+        transaction("initVersioning") { txn, ctx ->
+            val snapshot = ctx.repo().store(0L, Snapshot(0, 0))
+            val branch = ctx.repo().store(0L, Branch(0, -1, 0))
+            println("Initialised versioning: $branch, $snapshot")
+        }
+        .conditionalCommand { command, context ->
+            !context.repo().has(Branch.domain, 0)
+        }
+        .command()
+    }
+}
 
 enum class EntityChangeType { CREATE, UPDATE, DELETE }
 
@@ -115,6 +153,21 @@ data class EntityChange(val id: Long, val changeType: EntityChangeType, val enti
     constructor(id: Long, event: EntityChangedEvent<*>, snapshot: Long) : this(id, event.type, event.entityType, event.entityIdentifier, event.before?.version, event.after.version, snapshot)
     companion object {
         val domain = EntityChange::class.java
+    }
+}
+
+fun initEntityChange(reveno: Reveno) {
+    reveno.domain().apply {
+        transaction("createEntityChange") { txn, ctx ->
+            val snapshotId : Long = txn.longArg("snapshot")
+            val entityChange = ctx.repo().store(txn.id(), EntityChange(txn.id(), txn.arg("event"), snapshotId))
+            //ctx.repo().remap(snapshotId, SnapshotDomain) { id, s -> s + entityChange }
+            System.err.println("Created $entityChange")
+        }
+        .uniqueIdFor(EntityChange.domain)
+        .command()
+
+        viewMapper(EntityChange.domain, EntityChange.domain, EntityChange.domain.identityViewsMapper())
     }
 }
 
@@ -134,30 +187,13 @@ data class EntityChangedEvent<T>(val before: Entity<T>?, val after: Entity<T>) {
     }
 }
 
-fun initEntityChange(reveno: Reveno) {
-    reveno.domain().apply {
-        transaction("createEntityChange") { txn, ctx ->
-            val snapshotId : Long = txn.longArg("snapshot")
-            val entityChange = ctx.repo().store(txn.id(), EntityChange(txn.id(), txn.arg("event"), snapshotId))
-            //ctx.repo().remap(snapshotId, SnapshotDomain) { id, s -> s + entityChange }
-            println(entityChange)
+fun initEntityChangesEvent(reveno: Reveno) {
+    reveno.apply {
+        events().eventHandler(EntityChangedEvent.event) { event, metadata ->
+            System.err.println("Handling $event")
+            val snapshotId = query().select(Snapshot.domain).first().id
+            executeSync("createEntityChange", map("event", event, "snapshot", snapshotId))
         }
-        .uniqueIdFor(EntityChange.domain)
-        .command()
-
-        viewMapper(EntityChange.domain, EntityChange.domain, EntityChange.domain.identityViewsMapper())
-    }
-}
-
-fun initSnapshot(reveno: Reveno) {
-    reveno.domain().apply {
-        transaction("createSnapshot") { txn, ctx ->
-            ctx.repo().store(txn.id(), Snapshot(txn.id(), 0L))
-        }
-        .uniqueIdFor(Snapshot.domain)
-        .command()
-
-        viewMapper(Snapshot.domain, Snapshot.domain, Snapshot.domain.identityViewsMapper())
     }
 }
 
@@ -165,50 +201,44 @@ fun init(folder: String): Reveno {
     return Engine(folder).apply {
         initAccount(this)
         initEntityChange(this)
-        initSnapshot(this)
-
-        events().eventHandler(EntityChangedEvent.event) { event, metadata ->
-            val snapshotId = query().select(Snapshot.domain).first().id
-            executeSync("createEntityChange", map("event", event, "snapshot", snapshotId))
-        }
+        initVersioning(this)
+        initEntityChangesEvent(this)
     }
 }
 
+fun bootstrap(reveno: Reveno) {
+    reveno.apply {
+        executeSync<Unit>("initVersioning")
+        val branch = query().select(Branch.domain).sortedByDescending { it.id }.first()
+        currentBranch.set(branch.id)
+        currentSnapshot.set(branch.tip)
+    }
+}
+
+val currentBranch = AtomicLong(0)
+val currentSnapshot = AtomicLong(0)
+
 fun main(args: Array<String>) {
-    val reveno = init("data/reveno-sample-${Instant.now().epochSecond}")
-    reveno.startup()
+    val reveno = init("data/reveno-sample-${Instant.now().epochSecond}").apply {
+        startup()
+        bootstrap(this)
+    }
+
+    fun printAccountHistory() = reveno.query().select(Account.view).forEach { println(it) }
+
     try {
-        val snapshotId: Long = reveno.executeSync("createSnapshot")
-        println(snapshotId)
-        println(reveno.query().find(Snapshot.domain, snapshotId))
         val account = Stack<Long>()
         account.push(reveno.executeSync("createAccount", map("name", "John")))
-        reveno.query().select(Account.view).forEach { println(it) }
-//        val identifier = reveno.query().find(accountView, accountId).identifier
-        account.push(reveno.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
-        reveno.query().select(Account.view).forEach { println(it) }
-//        var latestAccountId = reveno.query().find(SnapshotEntityChangeHistoryView::class.java, snapshotId).entityChanges
-//                .filter { e -> e.entityClass == account && e.identifier == identifier }
-//                .first()
-//                .after
-//        if (latestAccountId != null) {
-//            println(reveno.query().find(accountView, latestAccountId))
-//        }
-        account.push(reveno.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
-        reveno.query().select(Account.view).forEach { println(it) }
-//        latestAccountId = reveno.query().find(SnapshotEntityChangeHistoryView::class.java, snapshotId).entityChanges
-//                .filter { e -> e.entityClass == account && e.identifier == identifier }
-//                .first()
-//                .after
-//        if (latestAccountId != null) {
-//            println(reveno.query().find(accountView, latestAccountId))
-//        }
-        account.push(reveno.executeSync("deleteAccount", map("id", account.pop())))
-        reveno.query().select(Account.view).forEach { println(it) }
+        printAccountHistory()
 
-        fun currentAccountForSnapshot(identifier: String, snapshot: Long) : AccountView? {
-            return null
-        }
+        account.push(reveno.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
+        printAccountHistory()
+
+        account.push(reveno.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
+        printAccountHistory()
+
+        account.push(reveno.executeSync("deleteAccount", map("id", account.pop())))
+        printAccountHistory()
 
     } finally {
         Thread.sleep(1000)
