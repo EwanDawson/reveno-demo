@@ -1,5 +1,8 @@
 package net.lazygun.experiment.reveno.demo.kotlin
 
+import it.unimi.dsi.fastutil.longs.LongArrayList
+import it.unimi.dsi.fastutil.longs.LongList
+import it.unimi.dsi.fastutil.longs.LongLists
 import org.reveno.atp.api.Reveno
 import org.reveno.atp.api.query.MappingContext
 import org.reveno.atp.core.Engine
@@ -99,22 +102,19 @@ fun initAccount(reveno: Reveno) {
     }
 }
 
-data class Snapshot private constructor (val id: Long, val ancestors: List<Long>, val creatorBranch: Long, val committed: Boolean, val commitMessage: String) {
-    constructor(id: Long, creatorBranch: Long) : this(id, listOf(id), creatorBranch, false, "")
+data class Snapshot private constructor (val id: Long, val ancestors: LongList, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: LongList) {
+    constructor(id: Long, creatorBranch: Long) : this(id, LongLists.singleton(id), creatorBranch, false, "", LongLists.EMPTY_LIST)
     fun commit(message: String) = copy(committed = true, commitMessage = message)
     fun branch(snapshotId: Long, branchId: Long) : Snapshot {
         check(committed)
-        return Snapshot(snapshotId, listOf(snapshotId) + ancestors, branchId, false, "")
+        return Snapshot(snapshotId, LongArrayList().apply { add(snapshotId); addAll(ancestors) }, branchId, false, "", LongLists.EMPTY_LIST)
     }
-    companion object {
-        val domain = Snapshot::class.java
-    }
+    operator fun plus(change: EntityChange) = copy(changes = LongArrayList().apply { add(change.id); addAll(changes) })
+    companion object { val domain = Snapshot::class.java }
 }
 
 data class Branch (val id: Long, val parent: Long, val tip: Long) {
-    companion object {
-        val domain = Branch::class.java
-    }
+    companion object { val domain = Branch::class.java }
 }
 
 fun initVersioning(reveno: Reveno) {
@@ -127,6 +127,14 @@ fun initVersioning(reveno: Reveno) {
         .command()
 
         viewMapper(Snapshot.domain, Snapshot.domain, Snapshot.domain.identityViewsMapper())
+
+        /*
+        TODO: Enabling the following view mapping causes the previous snapshot view to no longer be updated. Why?
+         */
+//        viewMapper(Snapshot.domain,SnapshotChangeHistory.view) { id, snapshot, repo ->
+//            val changes = repo.link(snapshot.changes, EntityChange.domain)
+//            SnapshotChangeHistory(id, changes)
+//        }
 
         transaction("createBranch") { txn, ctx ->
             val branch = ctx.repo().store(txn.id(), Branch)
@@ -151,9 +159,11 @@ enum class EntityChangeType { CREATE, UPDATE, DELETE }
 
 data class EntityChange(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val before: Long?, val after: Long?, val snapshot: Long) {
     constructor(id: Long, event: EntityChangedEvent<*>, snapshot: Long) : this(id, event.type, event.entityType, event.entityIdentifier, event.before?.version, event.after.version, snapshot)
-    companion object {
-        val domain = EntityChange::class.java
-    }
+    companion object { val domain = EntityChange::class.java }
+}
+
+data class SnapshotChangeHistory(val id: Long, val changes: List<EntityChange>) {
+    companion object { val view = SnapshotChangeHistory::class.java }
 }
 
 fun initEntityChange(reveno: Reveno) {
@@ -161,7 +171,7 @@ fun initEntityChange(reveno: Reveno) {
         transaction("createEntityChange") { txn, ctx ->
             val snapshotId : Long = txn.longArg("snapshot")
             val entityChange = ctx.repo().store(txn.id(), EntityChange(txn.id(), txn.arg("event"), snapshotId))
-            //ctx.repo().remap(snapshotId, SnapshotDomain) { id, s -> s + entityChange }
+            ctx.repo().remap(snapshotId, Snapshot.domain) { id, s -> s + entityChange }
             System.err.println("Created $entityChange")
         }
         .uniqueIdFor(EntityChange.domain)
@@ -191,8 +201,7 @@ fun initEntityChangesEvent(reveno: Reveno) {
     reveno.apply {
         events().eventHandler(EntityChangedEvent.event) { event, metadata ->
             System.err.println("Handling $event")
-            val snapshotId = query().select(Snapshot.domain).first().id
-            executeSync("createEntityChange", map("event", event, "snapshot", snapshotId))
+            executeSync("createEntityChange", map("event", event, "snapshot", currentSnapshot.get()))
         }
     }
 }
@@ -226,6 +235,8 @@ fun main(args: Array<String>) {
 
     fun printAccountHistory() = reveno.query().select(Account.view).forEach { println(it) }
 
+//    fun changeHistory(snapshot: Long) = reveno.query().find(SnapshotChangeHistory.view, snapshot)
+
     try {
         val account = Stack<Long>()
         account.push(reveno.executeSync("createAccount", map("name", "John")))
@@ -240,8 +251,13 @@ fun main(args: Array<String>) {
         account.push(reveno.executeSync("deleteAccount", map("id", account.pop())))
         printAccountHistory()
 
-    } finally {
         Thread.sleep(1000)
+
+        println("Current snapshot: ${currentSnapshot.get()}")
+        println(reveno.query().find(Snapshot.domain, currentSnapshot.get()))
+        //        println(changeHistory(currentSnapshot.get()))
+
+    } finally {
         reveno.shutdown()
     }
 }
