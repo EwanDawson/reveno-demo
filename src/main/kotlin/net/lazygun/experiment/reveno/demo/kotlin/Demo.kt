@@ -45,7 +45,7 @@ fun main(args: Array<String>) {
         val identifier = db.query().find(Account.view, account.peek()).identifier
         println("Account identifier: $identifier")
         fun printLatestVersion() {
-            println("Latest version: " + latestVersion(identifier, Account.view))
+            println("Latest version: " + latestVersion(currentSnapshot.get(), identifier, Account.view))
         }
 
         printAccountHistory()
@@ -54,6 +54,10 @@ fun main(args: Array<String>) {
         account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
         printAccountHistory()
         printLatestVersion()
+
+        currentSnapshot.getAndUpdate {
+            db.executeSync("commitSnapshot", map("id", it, "message", "First commit!"))
+        }
 
         account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
         printAccountHistory()

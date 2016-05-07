@@ -82,6 +82,17 @@ internal fun initVersionControlDomain(reveno: Reveno) {
         .uniqueIdFor(Snapshot.domain)
         .command()
 
+        transaction("commitSnapshot") { txn, ctx ->
+            val snapshot = ctx.repo().remap(txn.longArg(), Snapshot.domain, { id, s ->
+                s.commit(txn.arg<String>("message"))}
+            )
+            println("Committed $snapshot")
+            val uncommitted = ctx.repo().store(txn.id(), snapshot.branch(txn.id(), snapshot.creatorBranch))
+            println("Created new uncommitted snapshot $uncommitted")
+        }
+        .uniqueIdFor(Snapshot.domain)
+        .command()
+
         Snapshot.map(reveno.domain())
 
         transaction("createBranch") { txn, ctx ->
@@ -121,14 +132,12 @@ internal fun <T> entityChange(id: Long, entityChangeEvent: EntityChangedEvent<T>
 internal val currentBranch = AtomicLong(0)
 internal val currentSnapshot = AtomicLong(0)
 
-fun <T> latestVersion(identifier: String, view: Class<T>) : T {
+fun <T> latestVersion(snapshotId: Long, identifier: String, view: Class<T>) : T {
     val db = database.get()
-    val snapshotId = currentSnapshot.get()
     val snapshot = db.query().find(Snapshot.view, snapshotId)
-    val snapshotChangeHistory = db.query().select(Snapshot.view, { snapshot.ancestors.contains(it.id)} ).map { it.changes }.flatten()
-    val mostRecentChangeForEntityInstance = snapshotChangeHistory.firstOrNull { it.identifier == identifier }
-    ?: throw NoSuchElementException("No entity with identifier $identifier exists in the history of snapshot $snapshotId")
-    val entityId = mostRecentChangeForEntityInstance.after
+    val mostRecentSnapshot = snapshot.ancestors.first { db.query().find(Snapshot.view, it).changes.any { it.identifier == identifier }}
+    val mostRecentChange = db.query().find(Snapshot.view, mostRecentSnapshot).changes.first { it.identifier == identifier }
+    val entityId = mostRecentChange.after
     val entity = db.query().find(view, entityId)
     return entity
 }
