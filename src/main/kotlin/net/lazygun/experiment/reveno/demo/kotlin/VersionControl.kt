@@ -20,12 +20,12 @@ data class VersionedEntity<T> private constructor(val identifier: String, val ve
     }
 }
 
-data class Snapshot private constructor (val ancestors: LongList, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: LongList) {
-    constructor(id: Long, creatorBranch: Long) : this(list(id), creatorBranch, false, "", list())
+data class Snapshot private constructor (val id: Long, val ancestors: LongList, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: LongList) {
+    internal constructor(id: Long, creatorBranch: Long) : this(id, list(id), creatorBranch, false, "", list())
     fun commit(message: String) = copy(committed = true, commitMessage = message)
-    fun branch(snapshotId: Long, branchId: Long) : Snapshot {
+    fun branch(branchId: Long, snapshotId: Long) : Snapshot {
         check(committed)
-        return Snapshot(list(snapshotId, ancestors), branchId, false, "", list())
+        return Snapshot(snapshotId, branchId)
     }
     operator fun plus(change: EntityChange) = copy(changes = list(change.id, changes))
     data class View(val id: Long, val ancestors: List<Long>, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: List<EntityChange.View>)
@@ -38,13 +38,14 @@ data class Snapshot private constructor (val ancestors: LongList, val creatorBra
     }
 }
 
-data class Branch (val id: Long, val parent: Long, val tip: Long) {
-    data class View(val id: Long, val parent: Supplier<View>, val tip: Supplier<Snapshot.View>)
+data class Branch private  constructor (val id: Long, val tip: Long) {
+    constructor(id: Long, tip: Snapshot) : this (id, tip.id)
+    data class View(val id: Long, val tip: Supplier<Snapshot.View>)
     companion object {
         val domain = Branch::class.java
         val view = View::class.java
         fun map(reveno: RevenoManager) { reveno.viewMapper(domain, view) { id, e, r ->
-            View(id, r.link(view, e.parent), r.link(Snapshot.view, e.tip))
+            View(id, r.link(Snapshot.view, e.tip))
         }}
     }
 }
@@ -75,19 +76,12 @@ data class EntityChangedEvent<T>(val entity: VersionedEntity<T>, val before: Lon
 
 internal fun initVersionControlDomain(reveno: Reveno) {
     reveno.domain().apply {
-        transaction("createSnapshot") { txn, ctx ->
-            val snapshot = ctx.repo().store(txn.id(), Snapshot(txn.id(), 0L))
-            println("Created $snapshot")
-        }
-        .uniqueIdFor(Snapshot.domain)
-        .command()
-
         transaction("commitSnapshot") { txn, ctx ->
             val snapshot = ctx.repo().remap(txn.longArg(), Snapshot.domain, { id, s ->
                 s.commit(txn.arg<String>("message"))}
             )
             println("Committed $snapshot")
-            val uncommitted = ctx.repo().store(txn.id(), snapshot.branch(txn.id(), snapshot.creatorBranch))
+            val uncommitted = ctx.repo().store(txn.id(), snapshot.branch(snapshot.creatorBranch, txn.id()))
             println("Created new uncommitted snapshot $uncommitted")
         }
         .uniqueIdFor(Snapshot.domain)
@@ -96,15 +90,21 @@ internal fun initVersionControlDomain(reveno: Reveno) {
         Snapshot.map(reveno.domain())
 
         transaction("createBranch") { txn, ctx ->
-            val branch = ctx.repo().store(txn.id(), Branch)
+            val baseSnapshot = ctx.repo().get(Snapshot.domain, txn.longArg())
+            val tipSnapshot = baseSnapshot.branch(txn.id(Branch.domain), txn.id(Snapshot.domain))
+            ctx.repo().store(txn.id(Snapshot.domain), tipSnapshot)
+            val branch = Branch(txn.id(Branch.domain), tipSnapshot)
+            ctx.repo().store(txn.id(), branch)
             println("Created $branch")
         }
+        .uniqueIdFor(Branch.domain, Snapshot.domain)
+        .command()
 
         Branch.map(reveno.domain())
 
         transaction("initVersioning") { txn, ctx ->
             val snapshot = ctx.repo().store(0L, Snapshot(0, 0))
-            val branch = ctx.repo().store(0L, Branch(0, -1, 0))
+            val branch = ctx.repo().store(0L, Branch(0, snapshot))
             println("Initialised versioning: $branch, $snapshot")
         }
         .conditionalCommand { command, context ->
@@ -129,7 +129,6 @@ internal fun <T> entityChange(id: Long, entityChangeEvent: EntityChangedEvent<T>
     System.err.println("Created $entityChange")
 }
 
-internal val currentBranch = AtomicLong(0)
 internal val currentSnapshot = AtomicLong(0)
 
 fun <T> latestVersion(snapshotId: Long, identifier: String, view: Class<T>) : T {

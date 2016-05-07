@@ -14,13 +14,12 @@ internal fun init(folder: String): Reveno {
     }
 }
 
-internal fun bootstrap(reveno: Reveno) {
-    reveno.apply {
+internal fun bootstrap(reveno: Reveno) : Long {
+    reveno.run {
         executeSync<Unit>("initVersioning")
-        val branch = query().select(Branch.view).sortedByDescending { it.id }.first()
-        currentBranch.set(branch.id)
-        currentSnapshot.set(branch.tip.get().id)
+        val snapshot = query().select(Snapshot.view).sortedByDescending { it.id }.first().id
         database.set(this)
+        return snapshot
     }
 }
 
@@ -29,7 +28,7 @@ internal val database = AtomicReference<Reveno>()
 fun main(args: Array<String>) {
     init("data/reveno-sample-${Instant.now().epochSecond}").apply {
         startup()
-        bootstrap(this)
+        currentSnapshot.set(bootstrap(this))
     }
 
     val db = database.get()
@@ -41,7 +40,7 @@ fun main(args: Array<String>) {
 
     try {
         val account = Stack<Long>()
-        account.push(db.executeSync("createAccount", map("name", "John")))
+        account.push(db.executeSync("createAccount", map("account", Account("Ewan"))))
         val identifier = db.query().find(Account.view, account.peek()).identifier
         println("Account identifier: $identifier")
         fun printLatestVersion() {
@@ -55,24 +54,24 @@ fun main(args: Array<String>) {
         printAccountHistory()
         printLatestVersion()
 
-        currentSnapshot.getAndUpdate {
+        val forkSnapshot = currentSnapshot.getAndUpdate {
             db.executeSync("commitSnapshot", map("id", it, "message", "First commit!"))
         }
+        val branchA: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
+        val branchB: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
 
+        currentSnapshot.set(db.query().find(Branch.view, branchA).tip.get().id)
         account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
         printAccountHistory()
         printLatestVersion()
 
+        currentSnapshot.set(db.query().find(Branch.view, branchB).tip.get().id)
         account.push(db.executeSync("deleteAccount", map("id", account.pop())))
         printAccountHistory()
         printLatestVersion()
 
-        Thread.sleep(1000)
-
-        println("Current snapshot: ${currentSnapshot.get()}")
-        println(db.query().find(Snapshot.view, currentSnapshot.get()))
-
     } finally {
+        Thread.sleep(1000)
         db.shutdown()
     }
 }

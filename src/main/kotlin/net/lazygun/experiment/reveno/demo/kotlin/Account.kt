@@ -3,10 +3,11 @@ package net.lazygun.experiment.reveno.demo.kotlin
 import org.reveno.atp.api.Reveno
 import org.reveno.atp.api.RevenoManager
 
-data class Account(val name: String, val balance: Int) {
+data class Account private constructor (val name: String, val balance: Int) {
+    constructor(name: String) : this (name, 0)
     operator fun plus(amount: Int) : Account = copy(balance = balance + amount)
     data class Entity private constructor(val entity: VersionedEntity<Account>) {
-        constructor(name: String, balance: Int) : this(VersionedEntity(Account(name, balance), type))
+        constructor(account: Account) : this(VersionedEntity(account, type))
         private fun update(mutator: (Account) -> Account) : Entity = Entity(entity.update(mutator))
         fun delete() : Entity = Entity(entity.delete())
         operator fun plus(amount: Int) : Entity = update { it.plus(amount) }
@@ -27,7 +28,7 @@ internal fun initAccountDomain(reveno: Reveno) {
 
         transaction("createAccount") { txn, ctx ->
             val id = txn.id(Account.domain)
-            val newAccount = ctx.repo().store(id, Account.Entity(txn.arg(), 0))
+            val newAccount = ctx.repo().store(id, Account.Entity(txn.arg()))
             val entityChangedEvent = EntityChangedEvent(newAccount.entity, id)
             entityChange(txn.id(EntityChange.domain), entityChangedEvent, ctx.repo())
             ctx.eventBus().publishEvent(entityChangedEvent)
