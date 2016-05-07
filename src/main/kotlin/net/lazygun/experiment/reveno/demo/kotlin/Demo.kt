@@ -5,6 +5,7 @@ import org.reveno.atp.core.Engine
 import org.reveno.atp.utils.MapUtils.map
 import java.time.Instant
 import java.util.*
+import java.util.concurrent.atomic.AtomicReference
 
 internal fun init(folder: String): Reveno {
     return Engine(folder).apply {
@@ -19,37 +20,55 @@ internal fun bootstrap(reveno: Reveno) {
         val branch = query().select(Branch.view).sortedByDescending { it.id }.first()
         currentBranch.set(branch.id)
         currentSnapshot.set(branch.tip.get().id)
+        database.set(this)
     }
 }
 
+internal val database = AtomicReference<Reveno>()
+
 fun main(args: Array<String>) {
-    val reveno = init("data/reveno-sample-${Instant.now().epochSecond}").apply {
+    init("data/reveno-sample-${Instant.now().epochSecond}").apply {
         startup()
         bootstrap(this)
     }
 
-    fun printAccountHistory() = reveno.query().select(Account.view).forEach { println(it) }
+    val db = database.get()
+    fun printAccountHistory() {
+        println("---- Account history -----")
+        db.query().select(Account.view).forEach { println(it) }
+        println("--------------------------")
+    }
 
     try {
         val account = Stack<Long>()
-        account.push(reveno.executeSync("createAccount", map("name", "John")))
-        printAccountHistory()
+        account.push(db.executeSync("createAccount", map("name", "John")))
+        val identifier = db.query().find(Account.view, account.peek()).identifier
+        println("Account identifier: $identifier")
+        fun printLatestVersion() {
+            println("Latest version: " + latestVersion(identifier, Account.view))
+        }
 
-        account.push(reveno.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
         printAccountHistory()
+        printLatestVersion()
 
-        account.push(reveno.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
+        account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
         printAccountHistory()
+        printLatestVersion()
 
-        account.push(reveno.executeSync("deleteAccount", map("id", account.pop())))
+        account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
         printAccountHistory()
+        printLatestVersion()
+
+        account.push(db.executeSync("deleteAccount", map("id", account.pop())))
+        printAccountHistory()
+        printLatestVersion()
 
         Thread.sleep(1000)
 
         println("Current snapshot: ${currentSnapshot.get()}")
-        println(reveno.query().find(Snapshot.view, currentSnapshot.get()))
+        println(db.query().find(Snapshot.view, currentSnapshot.get()))
 
     } finally {
-        reveno.shutdown()
+        db.shutdown()
     }
 }
