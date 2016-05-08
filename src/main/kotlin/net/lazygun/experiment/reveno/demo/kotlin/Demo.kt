@@ -4,7 +4,6 @@ import org.reveno.atp.api.Reveno
 import org.reveno.atp.core.Engine
 import org.reveno.atp.utils.MapUtils.map
 import java.time.Instant
-import java.util.*
 import java.util.concurrent.atomic.AtomicReference
 
 internal fun init(folder: String): Reveno {
@@ -38,10 +37,16 @@ fun main(args: Array<String>) {
         println("--------------------------")
     }
 
+    fun updateCurrentSnapshotToBranchTip(branchId: Long) {
+        val branch = db.query().find(Branch.view, branchId)
+        val tipId = branch.tip.get().id
+        currentSnapshot.set(tipId)
+        println("Current snapshot set to ${db.query().find(Snapshot.view, tipId)}")
+    }
+
     try {
-        val account = Stack<Long>()
-        account.push(db.executeSync("createAccount", map("account", Account("Ewan"))))
-        val identifier = db.query().find(Account.view, account.peek()).identifier
+        val initialInstanceId: Long = db.executeSync("createAccount", map("account", Account("Ewan")))
+        val identifier = db.query().find(Account.view, initialInstanceId).identifier
         println("Account identifier: $identifier")
         fun printLatestVersion() {
             println("Latest version: " + latestVersion(currentSnapshot.get(), identifier, Account.view))
@@ -50,23 +55,28 @@ fun main(args: Array<String>) {
         printAccountHistory()
         printLatestVersion()
 
-        account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
+        val rootBranchUpdateId: Long = db.executeSync("updateAccount", map("id", initialInstanceId, "update", { a: Account -> a + 10000 }))
         printAccountHistory()
         printLatestVersion()
 
         val forkSnapshot = currentSnapshot.getAndUpdate {
-            db.executeSync("commitSnapshot", map("id", it, "message", "First commit!"))
+            val newSnapshot: Long = db.executeSync("commitSnapshot", map("id", it, "message", "First commit!"))
+            println("Current snapshot set to ${db.query().find(Snapshot.view, newSnapshot)}")
+            return@getAndUpdate newSnapshot
         }
-        val branchA: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
-        val branchB: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
 
-        currentSnapshot.set(db.query().find(Branch.view, branchA).tip.get().id)
-        account.push(db.executeSync("changeBalance", map("id", account.pop(), "inc", 10000)))
+        val branchA: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
+        println(db.query().find(Branch.view, branchA))
+        val branchB: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
+        println(db.query().find(Branch.view, branchB))
+
+        updateCurrentSnapshotToBranchTip(branchA)
+        val branchAUpdateId: Long = db.executeSync("updateAccount", map("id", rootBranchUpdateId, "update", {a: Account -> a + 10000 }))
         printAccountHistory()
         printLatestVersion()
 
-        currentSnapshot.set(db.query().find(Branch.view, branchB).tip.get().id)
-        account.push(db.executeSync("deleteAccount", map("id", account.pop())))
+        updateCurrentSnapshotToBranchTip(branchB)
+        val branchBUpdateId: Long = db.executeSync("deleteAccount", map("id", rootBranchUpdateId))
         printAccountHistory()
         printLatestVersion()
 

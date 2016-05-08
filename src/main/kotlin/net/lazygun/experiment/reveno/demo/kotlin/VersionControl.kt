@@ -25,7 +25,7 @@ data class Snapshot private constructor (val id: Long, val ancestors: LongList, 
     fun commit(message: String) = copy(committed = true, commitMessage = message)
     fun branch(branchId: Long, snapshotId: Long) : Snapshot {
         check(committed)
-        return Snapshot(snapshotId, branchId)
+        return Snapshot(snapshotId, list(snapshotId, ancestors), branchId, false, "", list())
     }
     operator fun plus(change: EntityChange) = copy(changes = list(change.id, changes))
     data class View(val id: Long, val ancestors: List<Long>, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: List<EntityChange.View>)
@@ -94,7 +94,7 @@ internal fun initVersionControlDomain(reveno: Reveno) {
             val tipSnapshot = baseSnapshot.branch(txn.id(Branch.domain), txn.id(Snapshot.domain))
             ctx.repo().store(txn.id(Snapshot.domain), tipSnapshot)
             val branch = Branch(txn.id(Branch.domain), tipSnapshot)
-            ctx.repo().store(txn.id(), branch)
+            ctx.repo().store(txn.id(Branch.domain), branch)
             println("Created $branch")
         }
         .uniqueIdFor(Branch.domain, Snapshot.domain)
