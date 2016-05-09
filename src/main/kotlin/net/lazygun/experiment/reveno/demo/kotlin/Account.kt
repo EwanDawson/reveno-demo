@@ -2,6 +2,8 @@ package net.lazygun.experiment.reveno.demo.kotlin
 
 import org.reveno.atp.api.Reveno
 import org.reveno.atp.api.RevenoManager
+import org.reveno.atp.api.commands.CommandContext
+import org.reveno.atp.api.dynamic.AbstractDynamicCommand
 
 data class Account private constructor (val name: String, val balance: Int, val childAccounts: List<String>) {
     constructor(name: String) : this (name, 0, listOf())
@@ -27,6 +29,11 @@ data class Account private constructor (val name: String, val balance: Int, val 
 internal fun initAccountDomain(reveno: Reveno) {
     reveno.domain().apply {
 
+        val accountUpdatePrecondition: (AbstractDynamicCommand, CommandContext) -> Boolean = { command, context ->
+            val account = context.repo().get(Account.domain, command.longArg("id"))
+            command.longArg("id") == latestVersion(currentSnapshot.get(), account.entity.identifier, Account.view).id
+        }
+
         transaction("createAccount") { txn, ctx ->
             val id = txn.id(Account.domain)
             val newAccount = ctx.repo().store(id, Account.Entity(txn.arg()))
@@ -38,21 +45,32 @@ internal fun initAccountDomain(reveno: Reveno) {
         .uniqueIdFor(Account.domain, EntityChange.domain)
         .command()
 
-        transaction("updateAccount") { txn, ctx ->
+        transaction("updateAccountBalance") { txn, ctx ->
             val beforeId = txn.longArg("id")
             val before = ctx.repo().get(Account.domain, beforeId)
             val afterId = txn.id(Account.domain)
-            val after = ctx.repo().store(afterId, before.update(txn.arg<(Account)->Account>("update")))
+            val after = ctx.repo().store(afterId, before.update({ a: Account -> a.plus(txn.arg("amount"))}))
             val entityChangedEvent = EntityChangedEvent(after.entity, beforeId, afterId)
             entityChange(txn.id(EntityChange.domain), entityChangedEvent, ctx.repo())
             ctx.eventBus().publishEvent(entityChangedEvent)
-            println("Updated account ${before.entity.identifier} from ${before.entity.value} to ${after.entity.value}")
+            println("Updated balance of account ${before.entity.identifier} from ${before.entity.value.balance} to ${after.entity.value.balance}")
         }
         .uniqueIdFor(Account.domain, EntityChange.domain)
-        .conditionalCommand { command, context ->
-            val account = context.repo().get(Account.domain, command.longArg("id"))
-            command.longArg("id") == latestVersion(currentSnapshot.get(), account.entity.identifier, Account.view).id
+        .conditionalCommand(accountUpdatePrecondition)
+        .command()
+
+        transaction("addChildAccount") { txn, ctx ->
+            val beforeId = txn.longArg("id")
+            val before = ctx.repo().get(Account.domain, beforeId)
+            val afterId = txn.id(Account.domain)
+            val after = ctx.repo().store(afterId, before.update({ a: Account -> a.addChild(txn.arg("child")) }))
+            val entityChangedEvent = EntityChangedEvent(after.entity, beforeId, afterId)
+            entityChange(txn.id(EntityChange.domain), entityChangedEvent, ctx.repo())
+            ctx.eventBus().publishEvent(entityChangedEvent)
+            println("Added child to account ${before.entity.identifier} from ${before.entity.value} to ${after.entity.value}")
         }
+        .uniqueIdFor(Account.domain, EntityChange.domain)
+        .conditionalCommand(accountUpdatePrecondition)
         .command()
 
         transaction("deleteAccount") { txn, ctx ->
@@ -66,10 +84,7 @@ internal fun initAccountDomain(reveno: Reveno) {
             println("Deleted ${after.entity}")
         }
         .uniqueIdFor(Account.domain, EntityChange.domain)
-        .conditionalCommand { command, context ->
-            val account = context.repo().get(Account.domain, command.longArg("id"))
-            command.longArg("id") == latestVersion(currentSnapshot.get(), account.entity.identifier, Account.view).id
-        }
+        .conditionalCommand(accountUpdatePrecondition)
         .command()
 
         Account.map(reveno.domain())

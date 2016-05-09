@@ -55,7 +55,7 @@ fun main(args: Array<String>) {
         printAccountHistory()
         printLatestVersion()
 
-        val rootBranchUpdateId: Long = db.executeSync("updateAccount", map("id", initialInstanceId, "update", { a: Account -> a + 10000 }))
+        val rootBranchUpdateId: Long = db.executeSync("updateAccountBalance", map("id", initialInstanceId, "amount", 10000))
         printAccountHistory()
         printLatestVersion()
 
@@ -71,7 +71,7 @@ fun main(args: Array<String>) {
         println(db.query().find(Branch.view, branchB))
 
         updateCurrentSnapshotToBranchTip(branchA)
-        val branchAUpdateId: Long = db.executeSync("updateAccount", map("id", rootBranchUpdateId, "update", {a: Account -> a + 10000 }))
+        val branchAUpdateId: Long = db.executeSync("updateAccountBalance", map("id", rootBranchUpdateId, "amount", -5000))
         printAccountHistory()
         printLatestVersion()
 
