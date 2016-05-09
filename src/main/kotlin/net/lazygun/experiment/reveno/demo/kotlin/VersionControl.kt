@@ -131,6 +131,7 @@ internal fun <T> entityChange(id: Long, entityChangeEvent: EntityChangedEvent<T>
 
 internal val currentSnapshot = AtomicLong(0)
 
+// TODO: See notes for a discussion on why this way of getting a snapshot view over all entities is incorrect
 fun <T> latestVersion(snapshotId: Long, identifier: String, view: Class<T>) : T {
     val db = database.get()
     val snapshot = db.query().find(Snapshot.view, snapshotId)
