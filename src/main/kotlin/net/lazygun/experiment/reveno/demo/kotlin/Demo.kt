@@ -49,7 +49,7 @@ fun main(args: Array<String>) {
         val identifier = db.query().find(Account.view, initialInstanceId).identifier
         println("Account identifier: $identifier")
         fun printLatestVersion() {
-            println("Latest version: " + latestVersion(currentSnapshot.get(), identifier, Account.view))
+            println("Latest version: " + VersionedEntityQuery(currentSnapshot.get()).find(identifier, Account.view))
         }
 
         printAccountHistory()

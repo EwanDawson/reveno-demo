@@ -6,7 +6,16 @@ import org.reveno.atp.api.RevenoManager
 import org.reveno.atp.api.domain.WriteableRepository
 import java.util.*
 import java.util.concurrent.atomic.AtomicLong
+import java.util.function.Predicate
 import java.util.function.Supplier
+
+interface EntityView {
+    val id: Long
+}
+
+interface VersionedEntityView : EntityView {
+    val identifier: String
+}
 
 data class VersionedEntity<T> private constructor(val identifier: String, val version: Long, val deleted: Boolean, val value: T, val type: String) {
     constructor(value: T, type: String) : this("$type:${UUID.randomUUID()}", 0L, false, value, type)
@@ -122,6 +131,8 @@ internal fun initVersionControlDomain(reveno: Reveno) {
     }
 }
 
+internal val currentSnapshot = AtomicLong(0)
+
 internal fun <T> entityChange(id: Long, entityChangeEvent: EntityChangedEvent<T>, repo: WriteableRepository) {
     val snapshotId = currentSnapshot.get()
     val entityChange = repo.store(id, EntityChange(id, entityChangeEvent, snapshotId))
@@ -129,15 +140,16 @@ internal fun <T> entityChange(id: Long, entityChangeEvent: EntityChangedEvent<T>
     System.err.println("Created $entityChange")
 }
 
-internal val currentSnapshot = AtomicLong(0)
-
-// TODO: See notes for a discussion on why this way of getting a snapshot view over all entities is incorrect
-fun <T> latestVersion(snapshotId: Long, identifier: String, view: Class<T>) : T {
-    val db = database.get()
-    val snapshot = db.query().find(Snapshot.view, snapshotId)
-    val mostRecentSnapshot = snapshot.ancestors.first { db.query().find(Snapshot.view, it).changes.any { it.identifier == identifier }}
-    val mostRecentChange = db.query().find(Snapshot.view, mostRecentSnapshot).changes.first { it.identifier == identifier }
-    val entityId = mostRecentChange.after
-    val entity = db.query().find(view, entityId)
-    return entity
+class VersionedEntityQuery(val snapshotId: Long) {
+    private val db = database.get()
+    private fun snapshot(id: Long) = db.query().find(Snapshot.view, id)
+    private val currentSnapshot = snapshot(snapshotId).ancestors.firstOrNull { snapshot(it).changes.isNotEmpty() }?.run { snapshot(this) }
+    val currentChange = currentSnapshot?.changes?.first()?.id
+    private fun mostRecentSnapshot(identifier: String) : Snapshot.View {
+        if (currentSnapshot == null) throw NoSuchElementException("No entity with identifier $identifier exists")
+        return snapshot(currentSnapshot.ancestors.first { snapshot(it).changes.any { it.identifier == identifier } })
+    }
+    private fun entityId(identifier: String) = mostRecentSnapshot(identifier).changes.first { it.id <= currentChange?:0L && it.identifier == identifier }.after
+    fun find(identifier: String, view: Class<out VersionedEntityView>) = db.query().find(view, entityId(identifier))
+    fun select(view: Class<VersionedEntityView>, predicate: Predicate<VersionedEntityView>) = db.query().select(view, predicate).filter { it.id == entityId(it.identifier) }
 }

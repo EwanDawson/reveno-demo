@@ -15,7 +15,7 @@ data class Account private constructor (val name: String, val balance: Int, val 
         fun update(mutator: (Account) -> Account) : Entity = Entity(entity.update(mutator))
         fun delete() : Entity = Entity(entity.delete())
     }
-    data class View(val id: Long, val identifier: String, val name: String, val balance: Int, val version: Long, val deleted: Boolean, val childAccounts: List<String>)
+    data class View(override val id: Long, override val identifier: String, val name: String, val balance: Int, val version: Long, val deleted: Boolean, val childAccounts: List<String>) : VersionedEntityView
     companion object {
         val type = "Account"
         val domain = Entity::class.java
@@ -31,7 +31,7 @@ internal fun initAccountDomain(reveno: Reveno) {
 
         val accountUpdatePrecondition: (AbstractDynamicCommand, CommandContext) -> Boolean = { command, context ->
             val account = context.repo().get(Account.domain, command.longArg("id"))
-            command.longArg("id") == latestVersion(currentSnapshot.get(), account.entity.identifier, Account.view).id
+            command.longArg("id") == VersionedEntityQuery(currentSnapshot.get()).find(account.entity.identifier, Account.view).id
         }
 
         transaction("createAccount") { txn, ctx ->
