@@ -17,6 +17,57 @@ interface VersionedEntityView : EntityView {
     val identifier: String
 }
 
+interface IVersionedEntity {
+    val identifier: String
+    val type: String
+    val version: Long
+    val deleted: Boolean
+}
+
+abstract class VersionedEntityImpl private constructor(identifier: String, type: String, version: Long, deleted: Boolean = false) : IVersionedEntity {
+    protected /* create */ constructor(type: String) : this("$type:${UUID.randomUUID()}", type, 0)
+    protected /* update/delete */ constructor(prev: VersionedEntityImpl, deleted: Boolean = false) : this(prev.identifier, prev.type, prev.version + 1, deleted)
+    override val identifier: String = identifier
+    override val type: String = type
+    override val version: Long = version
+    override val deleted = deleted
+    final override fun equals(other: Any?) = other is VersionedEntityImpl && identifier == other.identifier && version == other.version
+    final override fun hashCode() = Objects.hash(identifier, version)
+    private val abbrevId: String by lazy {
+        identifier.substringBefore(":") + ":" + identifier.substringAfterLast("-").substring(8)
+    }
+    private val toString: String by lazy {
+        "$abbrevId:$version{" + (if (deleted) "" else string()) + "}"
+    }
+    override fun toString() = toString
+    abstract protected fun string(): String
+}
+
+class Employee : VersionedEntityImpl {
+    val name: String
+    val salary: Int
+    fun raise(amount: Int) = Employee(this, salary = salary + if (amount > 0) amount else throw IllegalArgumentException())
+    fun retire() = Employee(this)
+    override fun string() = "name=$name,salary=$salary"
+    /* create */ constructor(name: String, salary: Int) : super("Employee") {
+        this.name = name
+        this.salary = salary
+    }
+    /* update/delete */ private constructor(current: Employee, name: String = current.name, salary: Int = current.salary) : super(current, name == current.name && salary == current.salary) {
+        this.name = name
+        this.salary = salary
+    }
+}
+
+fun main(args: Array<String>) {
+    val employee = Employee("Me", 123)
+    println(employee)
+    val bonusTime = employee.raise(100)
+    println(bonusTime)
+    val fired = bonusTime.retire()
+    println(fired)
+}
+
 data class VersionedEntity<T> private constructor(val identifier: String, val version: Long, val deleted: Boolean, val value: T, val type: String) {
     constructor(value: T, type: String) : this("$type:${UUID.randomUUID()}", 0L, false, value, type)
     fun update(mutator: (T) -> T) : VersionedEntity<T> {
