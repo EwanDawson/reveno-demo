@@ -17,7 +17,7 @@ interface VersionedEntityView : EntityView {
     val identifier: String
 }
 
-interface IVersionedEntity {
+interface VersionedEntity {
     val identifier: String
     val type: String
     val version: Long
@@ -25,7 +25,7 @@ interface IVersionedEntity {
 }
 
 data class VersionedEntityDelegate private constructor(override val identifier: String, override val type: String,
-                                                       override val version: Long, override val deleted: Boolean = false): IVersionedEntity {
+                                                       override val version: Long, override val deleted: Boolean = false): VersionedEntity {
     constructor(type: String) : this("$type:${UUID.randomUUID()}", type, 0)
     fun update(): VersionedEntityDelegate = copy(version = version + 1)
     fun delete(): VersionedEntityDelegate = copy(version = version + 1, deleted = true)
@@ -38,7 +38,7 @@ data class VersionedEntityDelegate private constructor(override val identifier: 
     fun toString(contents: String) = toString + "(" + (if (deleted) "" else contents) + ")"
 }
 
-data class Employee private constructor(val name: String, val salary: Int, private val e: VersionedEntityDelegate) : IVersionedEntity by e {
+data class Employee private constructor(val name: String, val salary: Int, private val e: VersionedEntityDelegate) : VersionedEntity by e {
     constructor(name: String, salary: Int) : this(name, salary, VersionedEntityDelegate("Employee"))
     fun raise(amount: Int) = copy(salary = salary + amount, e = e.update())
     fun retire() = copy(e = e.delete())
@@ -52,18 +52,6 @@ fun main(args: Array<String>) {
     println(bonusTime)
     val fired = bonusTime.retire()
     println(fired)
-}
-
-data class VersionedEntity<T> private constructor(val identifier: String, val version: Long, val deleted: Boolean, val value: T, val type: String) {
-    constructor(value: T, type: String) : this("$type:${UUID.randomUUID()}", 0L, false, value, type)
-    fun update(mutator: (T) -> T) : VersionedEntity<T> {
-        check(!deleted)
-        return copy(value = mutator(value), version = version + 1)
-    }
-    fun delete() : VersionedEntity<T> {
-        check(!deleted)
-        return copy(version = version + 1, deleted = true)
-    }
 }
 
 data class Snapshot private constructor (val id: Long, val ancestors: LongList, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: LongList) {
@@ -100,7 +88,7 @@ enum class EntityChangeType { CREATE, UPDATE, DELETE }
 
 data class EntityChange(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val before: Long, val after: Long, val snapshot: Long) {
 
-    constructor(id: Long, event: EntityChangedEvent<*>, snapshot: Long) : this(id, event.type, event.entityType, event.entityIdentifier, event.before, event.after, snapshot)
+    constructor(id: Long, event: EntityChangedEvent, snapshot: Long) : this(id, event.type, event.entityType, event.entityIdentifier, event.before, event.after, snapshot)
     data class View(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val before: Long?, val after: Long, val snapshot: Long)
     companion object {
         val domain = EntityChange::class.java
@@ -110,8 +98,8 @@ data class EntityChange(val id: Long, val changeType: EntityChangeType, val enti
         }}
     }
 }
-data class EntityChangedEvent<T>(val entity: VersionedEntity<T>, val before: Long, val after: Long) {
-    constructor(entity: VersionedEntity<T>, after: Long) : this(entity, -1, after)
+data class EntityChangedEvent(val entity: VersionedEntity, val before: Long, val after: Long) {
+    constructor(entity: VersionedEntity, after: Long) : this(entity, -1, after)
     val type: EntityChangeType = if (before == -1L) EntityChangeType.CREATE else if (entity.deleted) EntityChangeType.DELETE else EntityChangeType.UPDATE
     val entityType: String = entity.type
     val entityIdentifier: String = entity.identifier
@@ -170,7 +158,7 @@ internal fun initVersionControlDomain(reveno: Reveno) {
 
 internal val currentSnapshot = AtomicLong(0)
 
-internal fun <T> entityChange(id: Long, entityChangeEvent: EntityChangedEvent<T>, repo: WriteableRepository) {
+internal fun entityChange(id: Long, entityChangeEvent: EntityChangedEvent, repo: WriteableRepository) {
     val snapshotId = currentSnapshot.get()
     val entityChange = repo.store(id, EntityChange(id, entityChangeEvent, snapshotId))
     repo.remap(snapshotId, Snapshot.domain) { id, s -> s + entityChange }

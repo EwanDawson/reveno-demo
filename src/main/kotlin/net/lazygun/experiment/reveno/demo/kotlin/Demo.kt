@@ -45,7 +45,7 @@ fun main(args: Array<String>) {
     }
 
     try {
-        val initialInstanceId: Long = db.executeSync("createAccount", map("account", Account("Ewan")))
+        val initialInstanceId: Long = db.executeSync("createAccount", map("name", "Ewan"))
         val identifier = db.query().find(Account.view, initialInstanceId).identifier
         println("Account identifier: $identifier")
         fun printLatestVersion() {

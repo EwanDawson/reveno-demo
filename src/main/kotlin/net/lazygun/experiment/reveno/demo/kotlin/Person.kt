@@ -1,10 +1,7 @@
 package net.lazygun.experiment.reveno.demo.kotlin
 
-data class Person(val name: String, val age: Int) {
-    data class Entity private constructor(val versionedEntity: VersionedEntity<Person>) {
-        constructor(name: String, age: Int) : this(VersionedEntity(Person(name, age), "Person"))
-        fun update(mutator: (Person) -> Person) : Entity = Entity(versionedEntity.update(mutator))
-        fun delete() : Entity = Entity(versionedEntity.delete())
-    }
+data class Person private constructor(val name: String, val age: Int, private val e: VersionedEntityDelegate) : VersionedEntity by e {
+    constructor(name: String, age: Int) : this(name, age, VersionedEntityDelegate("Person"))
+    override fun toString() = e.toString("name=$name,age=$age")
 }
 
