@@ -13,7 +13,7 @@ internal fun init(folder: String): Reveno {
     }
 }
 
-internal fun bootstrap(reveno: Reveno) : Long {
+internal fun bootstrapVersionControl(reveno: Reveno) : Long {
     reveno.run {
         executeSync<Unit>("initVersioning")
         val snapshot = query().select(Snapshot.view).sortedByDescending { it.id }.first().id
@@ -27,7 +27,7 @@ internal val database = AtomicReference<Reveno>()
 fun main(args: Array<String>) {
     init("data/reveno-sample-${Instant.now().epochSecond}").apply {
         startup()
-        currentSnapshot.set(bootstrap(this))
+        currentSnapshot.set(bootstrapVersionControl(this))
     }
 
     val db = database.get()
@@ -45,8 +45,8 @@ fun main(args: Array<String>) {
     }
 
     try {
-        val initialInstanceId: Long = db.executeSync("createAccount", map("name", "Ewan"))
-        val identifier = db.query().find(Account.view, initialInstanceId).identifier
+        val initialInstanceId: Long = db.executeSync(CreateAccountCommand("Ewan"))
+        val identifier = db.query().find(Account.view, initialInstanceId).entityId
         println("Account identifier: $identifier")
         fun printLatestVersion() {
             println("Latest version: " + VersionedEntityQuery(currentSnapshot.get()).find(identifier, Account.view))
@@ -55,7 +55,7 @@ fun main(args: Array<String>) {
         printAccountHistory()
         printLatestVersion()
 
-        val rootBranchUpdateId: Long = db.executeSync("updateAccountBalance", map("id", initialInstanceId, "amount", 10000))
+        val rootBranchUpdateId: Long = db.executeSync(UpdateAccountBalanceCommand(initialInstanceId, 10000))
         printAccountHistory()
         printLatestVersion()
 
@@ -71,12 +71,12 @@ fun main(args: Array<String>) {
         println(db.query().find(Branch.view, branchB))
 
         updateCurrentSnapshotToBranchTip(branchA)
-        val branchAUpdateId: Long = db.executeSync("updateAccountBalance", map("id", rootBranchUpdateId, "amount", -5000))
+        val branchAUpdateId: Long = db.executeSync(UpdateAccountBalanceCommand(rootBranchUpdateId, -5000))
         printAccountHistory()
         printLatestVersion()
 
         updateCurrentSnapshotToBranchTip(branchB)
-        val branchBUpdateId: Long = db.executeSync("deleteAccount", map("id", rootBranchUpdateId))
+        val branchBUpdateId: Long = db.executeSync(CloseAccountCommand(rootBranchUpdateId))
         printAccountHistory()
         printLatestVersion()
 

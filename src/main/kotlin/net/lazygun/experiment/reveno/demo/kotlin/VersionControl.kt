@@ -3,34 +3,33 @@ package net.lazygun.experiment.reveno.demo.kotlin
 import it.unimi.dsi.fastutil.longs.LongList
 import org.reveno.atp.api.Reveno
 import org.reveno.atp.api.RevenoManager
-import org.reveno.atp.api.domain.WriteableRepository
 import java.util.*
 import java.util.concurrent.atomic.AtomicLong
 import java.util.function.Predicate
 import java.util.function.Supplier
 
 interface EntityView {
-    val id: Long
+    val versionId: Long
 }
 
 interface VersionedEntityView : EntityView {
-    val identifier: String
+    val entityId: String
 }
 
 interface VersionedEntity {
-    val identifier: String
+    val entityId: String
     val type: String
     val version: Long
     val deleted: Boolean
 }
 
-data class VersionedEntityDelegate private constructor(override val identifier: String, override val type: String,
+data class VersionedEntityDelegate private constructor(override val entityId: String, override val type: String,
                                                        override val version: Long, override val deleted: Boolean = false): VersionedEntity {
     constructor(type: String) : this("$type:${UUID.randomUUID()}", type, 0)
     fun update(): VersionedEntityDelegate = copy(version = version + 1)
     fun delete(): VersionedEntityDelegate = copy(version = version + 1, deleted = true)
     private val abbrevId: String by lazy {
-        identifier.substringBefore(":") + ":" + identifier.substringAfterLast("-").substring(8)
+        entityId.substringBefore(":") + ":" + entityId.substringAfterLast("-").substring(8)
     }
     private val toString: String by lazy {
         "$abbrevId:$version"
@@ -86,25 +85,17 @@ data class Branch private  constructor (val id: Long, val tip: Long) {
 
 enum class EntityChangeType { CREATE, UPDATE, DELETE }
 
-data class EntityChange(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val before: Long, val after: Long, val snapshot: Long) {
-
-    constructor(id: Long, event: EntityChangedEvent, snapshot: Long) : this(id, event.type, event.entityType, event.entityIdentifier, event.before, event.after, snapshot)
-    data class View(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val before: Long?, val after: Long, val snapshot: Long)
+data class EntityChange private constructor(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val beforeVersionId: Long?, val afterVersionId: Long, val snapshotId: Long) {
+    data class View(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val beforeVersionId: Long?, val afterVersionId: Long, val snapshotId: Long)
     companion object {
         val domain = EntityChange::class.java
         val view = EntityChange.View::class.java
         fun map(reveno: RevenoManager) { reveno.viewMapper(domain, view) { id, e, r ->
-            View(id, e.changeType, e.entityType, e.identifier, e.before, e.after, e.snapshot)
+            View(id, e.changeType, e.entityType, e.identifier, e.beforeVersionId, e.afterVersionId, e.snapshotId)
         }}
-    }
-}
-data class EntityChangedEvent(val entity: VersionedEntity, val before: Long, val after: Long) {
-    constructor(entity: VersionedEntity, after: Long) : this(entity, -1, after)
-    val type: EntityChangeType = if (before == -1L) EntityChangeType.CREATE else if (entity.deleted) EntityChangeType.DELETE else EntityChangeType.UPDATE
-    val entityType: String = entity.type
-    val entityIdentifier: String = entity.identifier
-    companion object {
-        val event = EntityChangedEvent::class.java
+        fun create(id: Long, entity: VersionedEntity, entityId: Long) = EntityChange(id, EntityChangeType.CREATE, entity.type, entity.entityId, null, entityId, currentSnapshot.get())
+        fun update(id: Long, entity: VersionedEntity, entityBeforeId: Long, entityAfterId: Long) = EntityChange(id, EntityChangeType.UPDATE, entity.type, entity.entityId, entityBeforeId, entityAfterId, currentSnapshot.get())
+        fun delete(id: Long, entity: VersionedEntity, entityBeforeId: Long, entityAfterId: Long) = EntityChange(id, EntityChangeType.DELETE, entity.type, entity.entityId, entityBeforeId, entityAfterId, currentSnapshot.get())
     }
 }
 
@@ -150,20 +141,13 @@ internal fun initVersionControlDomain(reveno: Reveno) {
     }
 
     reveno.apply {
-        events().eventHandler(EntityChangedEvent.event) { event, metadata ->
+        events().eventHandler(EntityChange.domain) { event, metadata ->
             System.err.println("Handling $event")
         }
     }
 }
 
 internal val currentSnapshot = AtomicLong(0)
-
-internal fun entityChange(id: Long, entityChangeEvent: EntityChangedEvent, repo: WriteableRepository) {
-    val snapshotId = currentSnapshot.get()
-    val entityChange = repo.store(id, EntityChange(id, entityChangeEvent, snapshotId))
-    repo.remap(snapshotId, Snapshot.domain) { id, s -> s + entityChange }
-    System.err.println("Created $entityChange")
-}
 
 class VersionedEntityQuery(val snapshotId: Long) {
     private val db = database.get()
@@ -174,7 +158,7 @@ class VersionedEntityQuery(val snapshotId: Long) {
         if (currentSnapshot == null) throw NoSuchElementException("No entity with identifier $identifier exists")
         return snapshot(currentSnapshot.ancestors.first { snapshot(it).changes.any { it.identifier == identifier } })
     }
-    private fun entityId(identifier: String) = mostRecentSnapshot(identifier).changes.first { it.id <= currentChange?:0L && it.identifier == identifier }.after
+    private fun entityId(identifier: String) = mostRecentSnapshot(identifier).changes.first { it.id <= currentChange?:0L && it.identifier == identifier }.afterVersionId
     fun find(identifier: String, view: Class<out VersionedEntityView>) = db.query().find(view, entityId(identifier))
-    fun select(view: Class<VersionedEntityView>, predicate: Predicate<VersionedEntityView>) = db.query().select(view, predicate).filter { it.id == entityId(it.identifier) }
+    fun select(view: Class<VersionedEntityView>, predicate: Predicate<VersionedEntityView>) = db.query().select(view, predicate).filter { it.versionId == entityId(it.entityId) }
 }
