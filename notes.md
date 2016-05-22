@@ -3,7 +3,9 @@
   are fired, but they are only handled after the transaction has committed.
 * _Does `conditionalCommand` run before of after the transaction handler? Can we specify post-conditions on the
   transaction?_
-  
+* Don't use a Kotlin `lazy` delegated property in your domain classes, as Protostuff will get into an infinite loop
+  when trying to serialise the field. It doesn't seem to be possible to mark a delegated property as transient,
+  so don't use them.
 Instead of viewing the latest version of an entity for the current Snapshot, we need to do it by EntityChange id.
 This is because, when are dealing with more than one entity instance, other updates may have occurred in the current
  Snapshot since we obtained the first entity. Thus, we may see an inconsistent view over the entities (this matters

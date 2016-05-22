@@ -2,7 +2,6 @@ package net.lazygun.experiment.reveno.demo.kotlin
 
 import org.reveno.atp.api.Reveno
 import org.reveno.atp.core.Engine
-import org.reveno.atp.utils.MapUtils.map
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 
@@ -10,15 +9,6 @@ internal fun init(folder: String): Reveno {
     return Engine(folder).apply {
         initAccountDomain(this)
         initVersionControlDomain(this)
-    }
-}
-
-internal fun bootstrapVersionControl(reveno: Reveno) : Long {
-    reveno.run {
-        executeSync<Unit>("initVersioning")
-        val snapshot = query().select(Snapshot.view).sortedByDescending { it.id }.first().id
-        database.set(this)
-        return snapshot
     }
 }
 
@@ -60,14 +50,14 @@ fun main(args: Array<String>) {
         printLatestVersion()
 
         val forkSnapshot = currentSnapshot.getAndUpdate {
-            val newSnapshot: Long = db.executeSync("commitSnapshot", map("id", it, "message", "First commit!"))
+            val newSnapshot: Long = db.executeSync(CommitSnapshotCommand(it, "First commit!"))
             println("Current snapshot set to ${db.query().find(Snapshot.view, newSnapshot)}")
             return@getAndUpdate newSnapshot
         }
 
-        val branchA: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
+        val branchA: Long = db.executeSync(CreateBranchCommand(forkSnapshot))
         println(db.query().find(Branch.view, branchA))
-        val branchB: Long = db.executeSync("createBranch", map("baseSnapshot", forkSnapshot))
+        val branchB: Long = db.executeSync(CreateBranchCommand(forkSnapshot))
         println(db.query().find(Branch.view, branchB))
 
         updateCurrentSnapshotToBranchTip(branchA)

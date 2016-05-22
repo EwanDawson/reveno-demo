@@ -28,29 +28,8 @@ data class VersionedEntityDelegate private constructor(override val entityId: St
     constructor(type: String) : this("$type:${UUID.randomUUID()}", type, 0)
     fun update(): VersionedEntityDelegate = copy(version = version + 1)
     fun delete(): VersionedEntityDelegate = copy(version = version + 1, deleted = true)
-    private val abbrevId: String by lazy {
-        entityId.substringBefore(":") + ":" + entityId.substringAfterLast("-").substring(8)
-    }
-    private val toString: String by lazy {
-        "$abbrevId:$version"
-    }
-    fun toString(contents: String) = toString + "(" + (if (deleted) "" else contents) + ")"
-}
-
-data class Employee private constructor(val name: String, val salary: Int, private val e: VersionedEntityDelegate) : VersionedEntity by e {
-    constructor(name: String, salary: Int) : this(name, salary, VersionedEntityDelegate("Employee"))
-    fun raise(amount: Int) = copy(salary = salary + amount, e = e.update())
-    fun retire() = copy(e = e.delete())
-    override fun toString() = e.toString("name=$name,salary=$salary")
-}
-
-fun main(args: Array<String>) {
-    val employee = Employee("Me", 123)
-    println(employee)
-    val bonusTime = employee.raise(100)
-    println(bonusTime)
-    val fired = bonusTime.retire()
-    println(fired)
+    fun abbrevId() = entityId.substringBefore(":") + ":" + entityId.substringAfterLast("-").substring(8)
+    fun toString(contents: String) = "${abbrevId()}:$version(${(if (deleted) "" else contents)})"
 }
 
 data class Snapshot private constructor (val id: Long, val ancestors: LongList, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: LongList) {
@@ -61,7 +40,7 @@ data class Snapshot private constructor (val id: Long, val ancestors: LongList, 
         return Snapshot(snapshotId, list(snapshotId, ancestors), branchId, false, "", list())
     }
     operator fun plus(change: EntityChange) = copy(changes = list(change.id, changes))
-    data class View(val id: Long, val ancestors: List<Long>, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: List<EntityChange.View>)
+    data class View(val id: Long, val ancestors: List<Long>, val creatorBranch: Long, val committed: Boolean, val commitMessage: String, val changes: List<EntityChange>)
     companion object {
         val domain = Snapshot::class.java
         val view = View::class.java
@@ -86,12 +65,11 @@ data class Branch private  constructor (val id: Long, val tip: Long) {
 enum class EntityChangeType { CREATE, UPDATE, DELETE }
 
 data class EntityChange private constructor(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val beforeVersionId: Long?, val afterVersionId: Long, val snapshotId: Long) {
-    data class View(val id: Long, val changeType: EntityChangeType, val entityType: String, val identifier: String, val beforeVersionId: Long?, val afterVersionId: Long, val snapshotId: Long)
     companion object {
         val domain = EntityChange::class.java
-        val view = EntityChange.View::class.java
+        val view = EntityChange::class.java
         fun map(reveno: RevenoManager) { reveno.viewMapper(domain, view) { id, e, r ->
-            View(id, e.changeType, e.entityType, e.identifier, e.beforeVersionId, e.afterVersionId, e.snapshotId)
+            EntityChange(id, e.changeType, e.entityType, e.identifier, e.beforeVersionId, e.afterVersionId, e.snapshotId)
         }}
         fun create(id: Long, entity: VersionedEntity, entityId: Long) = EntityChange(id, EntityChangeType.CREATE, entity.type, entity.entityId, null, entityId, currentSnapshot.get())
         fun update(id: Long, entity: VersionedEntity, entityBeforeId: Long, entityAfterId: Long) = EntityChange(id, EntityChangeType.UPDATE, entity.type, entity.entityId, entityBeforeId, entityAfterId, currentSnapshot.get())
@@ -99,43 +77,49 @@ data class EntityChange private constructor(val id: Long, val changeType: Entity
     }
 }
 
+data class CommitSnapshotCommand(val snapshotId: Long, val message: String)
+private data class CommitSnapshotTransaction(val committed: Snapshot, val newUncommitted: Snapshot)
+data class CreateBranchCommand(val baseSnapshotId: Long)
+private data class CreateBranchTransaction(val newBranch: Branch, val newBranchTip: Snapshot)
+data class InitVersionControl(val branchId: Long)
+
 internal fun initVersionControlDomain(reveno: Reveno) {
     reveno.domain().apply {
-        transaction("commitSnapshot") { txn, ctx ->
-            val snapshot = ctx.repo().remap(txn.longArg(), Snapshot.domain, { id, s ->
-                s.commit(txn.arg<String>("message"))}
-            )
-            println("Committed $snapshot")
-            val uncommitted = ctx.repo().store(txn.id(), snapshot.branch(snapshot.creatorBranch, txn.id()))
-            println("Created new uncommitted snapshot $uncommitted")
-        }
-        .uniqueIdFor(Snapshot.domain)
-        .command()
 
+        command(CommitSnapshotCommand::class.java, Long::class.java) { command, context ->
+            val committed = context.repo().get(Snapshot.domain, command.snapshotId).commit(command.message)
+            val newUncommitted = committed.branch(committed.creatorBranch, context.id(Snapshot.domain))
+            context.executeTxAction(CommitSnapshotTransaction(committed, newUncommitted))
+            newUncommitted.id
+        }
+        transactionAction(CommitSnapshotTransaction::class.java) { transaction, context ->
+            context.repo().remap(transaction.committed.id, Snapshot.domain) { id, snapshot ->
+                transaction.committed
+            }
+            context.repo().store(transaction.newUncommitted.id, transaction.newUncommitted)
+        }
         Snapshot.map(reveno.domain())
 
-        transaction("createBranch") { txn, ctx ->
-            val baseSnapshot = ctx.repo().get(Snapshot.domain, txn.longArg())
-            val tipSnapshot = baseSnapshot.branch(txn.id(Branch.domain), txn.id(Snapshot.domain))
-            ctx.repo().store(txn.id(Snapshot.domain), tipSnapshot)
-            val branch = Branch(txn.id(Branch.domain), tipSnapshot)
-            ctx.repo().store(txn.id(Branch.domain), branch)
-            println("Created $branch")
+        command(CreateBranchCommand::class.java, Long::class.java) { command, context ->
+            val baseSnapshot = context.repo().get(Snapshot.domain, command.baseSnapshotId)
+            val tipSnapshot = baseSnapshot.branch(context.id(Branch.domain), context.id(Snapshot.domain))
+            context.executeTxAction(CreateBranchTransaction(Branch(tipSnapshot.creatorBranch, tipSnapshot), tipSnapshot))
+            tipSnapshot.creatorBranch
         }
-        .uniqueIdFor(Branch.domain, Snapshot.domain)
-        .command()
-
+        transactionAction(CreateBranchTransaction::class.java) { transaction, context ->
+            context.repo().store(transaction.newBranch.id, transaction.newBranch)
+            context.repo().store(transaction.newBranchTip.id, transaction.newBranchTip)
+        }
         Branch.map(reveno.domain())
 
-        transaction("initVersioning") { txn, ctx ->
-            val snapshot = ctx.repo().store(0L, Snapshot(0, 0))
-            val branch = ctx.repo().store(0L, Branch(0, snapshot))
-            println("Initialised versioning: $branch, $snapshot")
+        command(InitVersionControl::class.java) { command, context ->
+            if (!context.repo().has(Branch.domain, command.branchId)) context.executeTxAction(command)
+            else throw IllegalStateException("Version Control already initialised")
         }
-        .conditionalCommand { command, context ->
-            !context.repo().has(Branch.domain, 0)
+        transactionAction(InitVersionControl::class.java) { transaction, context ->
+            val snapshot = context.repo().store(0, Snapshot(0, transaction.branchId))
+            context.repo().store(transaction.branchId, Branch(transaction.branchId, snapshot))
         }
-        .command()
 
         EntityChange.map(reveno.domain())
     }
@@ -144,6 +128,15 @@ internal fun initVersionControlDomain(reveno: Reveno) {
         events().eventHandler(EntityChange.domain) { event, metadata ->
             System.err.println("Handling $event")
         }
+    }
+}
+
+internal fun bootstrapVersionControl(reveno: Reveno) : Long {
+    reveno.run {
+        executeSync<Unit>(InitVersionControl(0))
+        val snapshot = query().select(Snapshot.view).sortedByDescending { it.id }.first().id
+        database.set(this)
+        return snapshot
     }
 }
 
