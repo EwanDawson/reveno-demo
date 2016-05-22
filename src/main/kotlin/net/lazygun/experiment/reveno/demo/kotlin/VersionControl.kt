@@ -153,5 +153,5 @@ class VersionedEntityQuery(val snapshotId: Long) {
     }
     private fun entityId(identifier: String) = mostRecentSnapshot(identifier).changes.first { it.id <= currentChange?:0L && it.identifier == identifier }.afterVersionId
     fun find(identifier: String, view: Class<out VersionedEntityView>) = db.query().find(view, entityId(identifier))
-    fun select(view: Class<VersionedEntityView>, predicate: Predicate<VersionedEntityView>) = db.query().select(view, predicate).filter { it.versionId == entityId(it.entityId) }
+    fun <T : VersionedEntityView> select(view: Class<T>, predicate: Predicate<T>) = db.query().select(view, predicate).filter { it.versionId == entityId(it.entityId) }
 }

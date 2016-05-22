@@ -3,14 +3,14 @@ package net.lazygun.experiment.reveno.demo.kotlin
 import org.reveno.atp.api.Reveno
 import org.reveno.atp.api.RevenoManager
 
-data class Account private constructor (val name: String, val balance: Int, val childAccounts: List<String>, private val e: VersionedEntityDelegate) : VersionedEntity by e {
-    constructor(name: String) : this (name, 0, listOf(), VersionedEntityDelegate(Account.type))
+data class Account private constructor (val name: String, val balance: Int, val childAccounts: Set<String>, private val e: VersionedEntityDelegate) : VersionedEntity by e {
+    constructor(name: String) : this (name, 0, setOf(), VersionedEntityDelegate(Account.type))
     operator fun plus(amount: Int) = copy(balance = balance + amount, e = e.update())
     operator fun minus(amount: Int) = copy(balance = balance - amount, e = e.update())
     fun close() = copy(e = e.delete())
     fun addChild(identifier: String) = copy(childAccounts = childAccounts + identifier)
     override fun toString() = e.toString("name=$name, balance=$balance, childAccounts=$childAccounts")
-    data class View(override val versionId: Long, override val entityId: String, val name: String, val balance: Int, val version: Long, val deleted: Boolean, val childAccounts: List<String>) : VersionedEntityView
+    data class View(override val versionId: Long, override val entityId: String, val name: String, val balance: Int, val version: Long, val deleted: Boolean, val childAccounts: Set<String>) : VersionedEntityView
     companion object {
         val type = "Account"
         val domain = Account::class.java
